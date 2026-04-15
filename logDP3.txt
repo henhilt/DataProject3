@@ -1,0 +1,774 @@
+------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  /home/henhilt/ECON388/DataProject3/logDP3.txt
+  log type:  text
+ opened on:  14 Apr 2026, 20:02:29
+
+. clear
+
+. 
+. /*
+> 
+> ECON 388 STATA EXERCISE TEMPLATE
+> 
+>   Use this template DO file as the
+>   basis for all Stata exercises.
+> 
+>   For each assignment, make sure to
+>   enter your name and the problem 
+>   set number in the appropriate
+>   spaces below.
+> 
+> NAME: Henry Hilton
+> 
+> DATA PROJECT 3
+> 
+> 
+>   Begin your do file in the space 
+>   below the stars, adding additional
+>   lines as needed */
+. 
+. ************************************
+. 
+. // import and save hpi dataset
+. import excel "hpi_at_zip3.xlsx", firstrow clear
+(7 vars, 42,050 obs)
+
+. 
+. // remove obs not in 2020 and 2021
+. keep if inlist(year, 2020, 2021)
+(40,292 observations deleted)
+
+. 
+. 
+. // make each row a unique zip
+. reshape wide hpi annualdelta hpi1990base hpi2000base, i(zip) j(year)
+(j = 2020 2021)
+
+Data                               Long   ->   Wide
+-----------------------------------------------------------------------------
+Number of observations            1,758   ->   879         
+Number of variables                   7   ->   10          
+j variable (2 values)              year   ->   (dropped)
+xij variables:
+                                    hpi   ->   hpi2020 hpi2021
+                            annualdelta   ->   annualdelta2020 annualdelta2021
+                            hpi1990base   ->   hpi1990base2020 hpi1990base2021
+                            hpi2000base   ->   hpi2000base2020 hpi2000base2021
+-----------------------------------------------------------------------------
+
+. 
+. save hpi.dta, replace
+file hpi.dta saved
+
+. 
+. // import and save the zip dataset
+. import excel "ZIP_COUNTY_122020.xlsx", firstrow clear
+(6 vars, 54,194 obs)
+
+. // convert zip to int from string to match hpi file
+. destring zip, replace
+zip: all characters numeric; replaced as int
+
+. destring fips, replace
+fips: all characters numeric; replaced as long
+
+. sort zip fips
+
+. 
+. // get residential ratio for zip
+. collapse (sum) RES_RATIO, by(zip fips)
+
+. bysort zip: egen total_res = total(RES_RATIO)
+
+. // get weights per zip
+. gen resweight = RES_RATIO / total_res
+(24 missing values generated)
+
+. replace resweight = 0 if resweight == .
+(24 real changes made)
+
+. drop RES_RATIO
+
+. drop total_res
+
+. save zip.dta, replace
+file zip.dta saved
+
+. 
+. 
+. // import and save the covid deaths dataset
+. import delimited "us-counties-2020.csv", clear
+(encoding automatically selected: ISO-8859-1)
+(7 vars, 884,737 obs)
+
+. // convert date strings to date type
+. gen date_new = date(date, "MDY")
+
+. format date_new %td
+
+. 
+. // get final death values per county
+. sort fips date_new
+
+. // keep last entry for each county
+. bysort fips (date_new): keep if _n == _N
+(881,518 observations deleted)
+
+. // 3219 count of fips after matches count of before=success
+. save covdeaths.dta, replace
+file covdeaths.dta saved
+
+. 
+. 
+. // import and save the county population dataset
+. import excel "co-est2025-pop.xlsx", firstrow clear
+(8 vars, 3,151 obs)
+
+. compress
+  (0 bytes saved)
+
+. // rename columns
+. rename GeographicArea ctystate
+
+. rename April12020EstimatesBase ctypop2020
+
+. keep ctystate ctypop2020
+
+. // split county and state column
+. split ctystate, p(",") limit(2)
+variables created as string: 
+ctystate1  ctystate2
+
+. drop ctystate
+
+. rename ctystate1 county_raw
+
+. rename ctystate2 state
+
+. // clean county names to remove endings
+. gen county = strtrim(county_raw)
+
+. replace county = subinstr(county, " County", "", .)
+(2,999 real changes made)
+
+. replace county = subinstr(county, " City and Borough", "", .)
+(4 real changes made)
+
+. replace county = subinstr(county, " Census Area", "", .)
+(11 real changes made)
+
+. replace county = subinstr(county, " Municipality", "", .)
+(2 real changes made)
+
+. replace county = subinstr(county, " Planning Region", "", .)
+(9 real changes made)
+
+. replace county = subinstr(county, " Parish", "", .)
+(64 real changes made)
+
+. replace county = subinstr(county, " city", "", .)
+(40 real changes made)
+
+. // remove period or spaces
+. replace county = substr(county, 2, .) if substr(county, 1, 1) == "."
+(3,144 real changes made)
+
+. replace county = strtrim(county)
+(0 real changes made)
+
+. // combine city/county of same name to avoid merge issues
+. collapse (sum) ctypop2020, by(county state)
+
+. // drop disclaimer/US rows and unneeded columns
+. drop if missing(ctypop2020,state)
+(3 observations deleted)
+
+. // finalize check cleaning
+. replace county = strtrim(lower(county))
+(3,142 real changes made)
+
+. replace state = strtrim(lower(state))
+(3,142 real changes made)
+
+. replace county = subinstr(county, ".", "", .)
+(27 real changes made)
+
+. replace county = strtrim(county)
+(0 real changes made)
+
+. save ctypop.dta, replace
+file ctypop.dta saved
+
+. 
+. 
+. // merge hpi and zip
+. use hpi.dta, clear
+
+. 
+. merge 1:m zip using "zip.dta"
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                           147
+        from master                         0  (_merge==1)
+        from using                        147  (_merge==2)
+
+    Matched                             6,761  (_merge==3)
+    -----------------------------------------
+
+. 
+. 
+. // get weighted hpi per zip
+. gen weighted_hpi2020 = hpi2020 * resweight
+(148 missing values generated)
+
+. gen weighted_hpi2021 = hpi2021 * resweight
+(148 missing values generated)
+
+. 
+. 
+. // aggregate to the county (fips) level
+. collapse (sum) weighted_hpi2020 weighted_hpi2021, by(fips)
+
+. 
+. rename weighted_hpi2020 ctyhpi2020
+
+. rename weighted_hpi2021 ctyhpi2021
+
+. 
+. save ctyhpi.dta, replace
+file ctyhpi.dta saved
+
+. 
+. // merge with covdeaths
+. merge 1:1 fips using "covdeaths.dta"
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                            18
+        from master                        13  (_merge==1)
+        from using                          5  (_merge==2)
+
+    Matched                             3,214  (_merge==3)
+    -----------------------------------------
+
+. //clean up unmatched, only a handful (18) lost, keep matches only
+. keep if _merge == 3
+(18 observations deleted)
+
+. drop _merge
+
+. // finalize cleaning check
+. replace county = strtrim(lower(county))
+(3,214 real changes made)
+
+. replace state = strtrim(lower(state))
+(3,214 real changes made)
+
+. replace county = subinstr(county, " county", "", .)
+(0 real changes made)
+
+. replace county = strtrim(county)
+(0 real changes made)
+
+. save "hpi_covid.dta", replace
+file hpi_covid.dta saved
+
+. 
+. // merge with ctypop
+. merge 1:1 county state using "ctypop.dta"
+(variable state was str24, now str38 to accommodate using data's values)
+(variable county was str35, now str127 to accommodate using data's values)
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                           268
+        from master                       170  (_merge==1)
+        from using                         98  (_merge==2)
+
+    Matched                             3,044  (_merge==3)
+    -----------------------------------------
+
+. // keep successful, lost 268
+. keep if _merg == 3
+(268 observations deleted)
+
+. drop _merge
+
+. 
+. // create mortality rate of covid per 1000 people
+. gen cov_mort_rate = (deaths / ctypop2020) * 1000
+
+. // create change of hpi
+. gen hpi_growth = (ctyhpi2021 / ctyhpi2020) - 1
+(5 missing values generated)
+
+. compress
+  variable date_new was float now int
+  variable ctypop2020 was double now long
+  variable county was str127 now str28
+  variable state was str38 now str20
+  (374,412 bytes saved)
+
+. // save base dataset
+. save "base.dta", replace
+file base.dta saved
+
+. 
+. // add in controls
+. // want population density, so add in area of each county to calc
+. // from https://www.census.gov/geographies/reference-files/time-series/geo/g
+> azetteer-files.2020.html#form-dropdown-264479560
+. import delimited "2020_Gaz_counties_national.txt", clear 
+(encoding automatically selected: ISO-8859-1)
+(10 vars, 3,221 obs)
+
+. rename geoid fips
+
+. rename aland_sqmi land_sqmi
+
+. keep fips land_sqmi
+
+. save "land_area.dta", replace
+file land_area.dta saved
+
+. // want income per county to control for poverty differences
+. // https://www.census.gov/data/datasets/2020/demo/saipe/2020-state-and-count
+> y.html
+. import excel "est20all.xls", sheet("est20ALL") cellrange(A4) firstrow clear
+(31 vars, 3,195 obs)
+
+. // combine state and county fips
+. destring StateFIPSCode CountyFIPSCode, replace
+StateFIPSCode: all characters numeric; replaced as byte
+CountyFIPSCode: all characters numeric; replaced as int
+
+. gen fips = (StateFIPSCode * 1000) + CountyFIPSCode
+
+. // rename and drop unneeded
+. rename MedianHouseholdIncome medinc2020
+
+. keep fips medinc2020
+
+. destring medinc2020, replace
+medinc2020: all characters numeric; replaced as long
+(1 missing value generated)
+
+. gen ln_medinc2020 = ln(medinc2020)
+(1 missing value generated)
+
+. save "ctyinc.dta", replace
+file ctyinc.dta saved
+
+. 
+. // merge cty area with base
+. use "base.dta", clear
+
+. merge 1:1 fips using "land_area.dta"
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                           177
+        from master                         0  (_merge==1)
+        from using                        177  (_merge==2)
+
+    Matched                             3,044  (_merge==3)
+    -----------------------------------------
+
+. // only keep matches, 177 lost
+. keep if _merge == 3
+(177 observations deleted)
+
+. drop _merge
+
+. 
+. // calc pop density
+. gen density = ctypop2020 / land_sqmi
+
+. // log of density to normalize/account for really different size counties
+. gen ln_density = ln(density)
+
+. 
+. // merge in ctyinc
+. merge 1:1 fips using "ctyinc.dta"
+(variable fips was long, now double to accommodate using data's values)
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                           151
+        from master                         0  (_merge==1)
+        from using                        151  (_merge==2)
+
+    Matched                             3,044  (_merge==3)
+    -----------------------------------------
+
+. // only keep matches, 151 lost
+. keep if _merge == 3
+(151 observations deleted)
+
+. drop _merge
+
+. 
+. // make case rate var
+. gen cov_case_rate = (cases / ctypop2020) * 1000
+
+. 
+. // make state_fips numerical
+. gen state_fips = int(fips / 1000)
+
+. 
+. // finalize master dataset
+. keep fips county state state_fips hpi_growth cov_mort_rate cov_case_rate den
+> sity ln_density medinc2020 ln_medinc2020 ctypop2020 deaths cases
+
+. compress
+  variable state_fips was float now byte
+  variable fips was double now long
+  (21,308 bytes saved)
+
+. // shrink col width
+. format county state %8s
+
+. save "master.dta", replace
+file master.dta saved
+
+. 
+. // naive regression hpi growth on mort rate
+. reg hpi_growth cov_mort_rate
+
+      Source |       SS           df       MS      Number of obs   =     3,039
+-------------+----------------------------------   F(1, 3037)      =    200.67
+       Model |  .252466478         1  .252466478   Prob > F        =    0.0000
+    Residual |  3.82098335     3,037  .001258144   R-squared       =    0.0620
+-------------+----------------------------------   Adj R-squared   =    0.0617
+       Total |  4.07344983     3,038  .001340833   Root MSE        =    .03547
+
+------------------------------------------------------------------------------
+  hpi_growth | Coefficient  Std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+cov_mort_r~e |  -.0102778   .0007255   -14.17   0.000    -.0117004   -.0088552
+       _cons |   .1222445   .0010702   114.23   0.000     .1201462    .1243428
+------------------------------------------------------------------------------
+
+. 
+. // add in controls and fixed state effects
+. reg hpi_growth cov_mort_rate ln_density ln_medinc2020 i.state_fips 
+
+      Source |       SS           df       MS      Number of obs   =     3,039
+-------------+----------------------------------   F(52, 2986)     =    110.40
+       Model |  2.67966463        52  .051532012   Prob > F        =    0.0000
+    Residual |   1.3937852     2,986  .000466773   R-squared       =    0.6578
+-------------+----------------------------------   Adj R-squared   =    0.6519
+       Total |  4.07344983     3,038  .001340833   Root MSE        =     .0216
+
+------------------------------------------------------------------------------
+  hpi_growth | Coefficient  Std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+cov_mort_r~e |  -.0037989   .0005387    -7.05   0.000    -.0048552   -.0027427
+  ln_density |   .0023043   .0003471     6.64   0.000     .0016236     .002985
+ln_medi~2020 |  -.0075872   .0024138    -3.14   0.002      -.01232   -.0028544
+             |
+  state_fips |
+          2  |  -.0124914   .0073517    -1.70   0.089    -.0269063    .0019235
+          4  |   .1009964    .006212    16.26   0.000     .0888162    .1131766
+          5  |   .0101972   .0036624     2.78   0.005     .0030162    .0173782
+          6  |   .0382427   .0039958     9.57   0.000     .0304078    .0460776
+          8  |   .0502287   .0039281    12.79   0.000     .0425267    .0579307
+         10  |    .017887   .0127814     1.40   0.162    -.0071742    .0429481
+         11  |  -.0304554   .0218392    -1.39   0.163    -.0732768     .012366
+         12  |   .0589975   .0037934    15.55   0.000     .0515596    .0664355
+         13  |   .0261961    .003175     8.25   0.000     .0199707    .0324215
+         15  |  -.0162665   .0111833    -1.45   0.146    -.0381942    .0056612
+         16  |   .1403005   .0043002    32.63   0.000      .131869    .1487321
+         17  |  -.0157925   .0034776    -4.54   0.000    -.0226113   -.0089737
+         18  |    .025882   .0035333     7.33   0.000     .0189541    .0328099
+         19  |  -.0100196   .0035244    -2.84   0.005      -.01693   -.0031091
+         20  |   .0034461   .0034974     0.99   0.325    -.0034114    .0103037
+         21  |   .0073973   .0033229     2.23   0.026      .000882    .0139127
+         22  |  -.0323981   .0039647    -8.17   0.000    -.0401719   -.0246242
+         23  |   .0516717   .0060538     8.54   0.000     .0398018    .0635417
+         24  |   .0107461   .0054246     1.98   0.048     .0001099    .0213824
+         25  |   .0284637   .0064704     4.40   0.000     .0157769    .0411506
+         26  |   .0334325   .0036004     9.29   0.000     .0263731    .0404919
+         27  |   .0079797   .0036427     2.19   0.029     .0008373    .0151221
+         28  |  -.0154306   .0035966    -4.29   0.000    -.0224827   -.0083785
+         29  |   .0235855   .0033837     6.97   0.000     .0169508    .0302201
+         30  |    .047164   .0040951    11.52   0.000     .0391344    .0551935
+         31  |   .0062953   .0036135     1.74   0.082      -.00079    .0133806
+         32  |    .071743   .0060276    11.90   0.000     .0599244    .0835616
+         33  |   .0568509   .0073933     7.69   0.000     .0423545    .0713473
+         34  |   .0242326   .0055947     4.33   0.000     .0132628    .0352024
+         35  |   .0138437   .0047053     2.94   0.003     .0046178    .0230697
+         36  |   .0146194   .0039755     3.68   0.000     .0068244    .0224143
+         37  |   .0380463   .0034398    11.06   0.000     .0313017     .044791
+         38  |  -.0369838   .0042224    -8.76   0.000    -.0452629   -.0287048
+         39  |   .0155395   .0035491     4.38   0.000     .0085805    .0224985
+         40  |   .0032062   .0036507     0.88   0.380    -.0039519    .0103643
+         41  |   .0646126   .0045538    14.19   0.000     .0556837    .0735414
+         42  |   .0004458    .003778     0.12   0.906     -.006962    .0078536
+         44  |   .0384156   .0100934     3.81   0.000     .0186249    .0582063
+         45  |   .0261904   .0041551     6.30   0.000     .0180432    .0343376
+         46  |   .0126692   .0039407     3.21   0.001     .0049425     .020396
+         47  |   .0579563   .0034679    16.71   0.000     .0511566    .0647559
+         48  |   .0241537   .0030675     7.87   0.000      .018139    .0301684
+         49  |   .1056196   .0049639    21.28   0.000     .0958865    .1153527
+         50  |    .033705   .0064097     5.26   0.000     .0211372    .0462728
+         51  |   .0066123   .0035222     1.88   0.061     -.000294    .0135185
+         53  |   .0648725   .0044379    14.62   0.000     .0561707    .0735742
+         54  |  -.0155165   .0039743    -3.90   0.000    -.0233091    -.007724
+         55  |   .0130983   .0037478     3.49   0.000     .0057496    .0204469
+         56  |   .0105188   .0054199     1.94   0.052    -.0001082    .0211459
+             |
+       _cons |   .1689931   .0256088     6.60   0.000     .1187805    .2192058
+------------------------------------------------------------------------------
+
+. hettest
+
+Breusch–Pagan/Cook–Weisberg test for heteroskedasticity 
+Assumption: Normal error terms
+Variable: Fitted values of hpi_growth
+
+H0: Constant variance
+
+    chi2(1) =  31.42
+Prob > chi2 = 0.0000
+
+. /*
+> Breusch–Pagan/Cook–Weisberg test for heteroskedasticity 
+> Assumption: Normal error terms
+> Variable: Fitted values of hpi_growth
+> 
+> H0: Constant variance
+> 
+>     chi2(1) =  26.52
+> Prob > chi2 = 0.0000
+> suggests I don't have constant variance, so i should use vce(robust)
+> */
+. reg hpi_growth cov_mort_rate ln_density ln_medinc2020 i.state_fips, vce(robu
+> st)
+
+Linear regression                               Number of obs     =      3,039
+                                                F(51, 2986)       =          .
+                                                Prob > F          =          .
+                                                R-squared         =     0.6578
+                                                Root MSE          =      .0216
+
+------------------------------------------------------------------------------
+             |               Robust
+  hpi_growth | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+cov_mort_r~e |  -.0037989    .000587    -6.47   0.000    -.0049499    -.002648
+  ln_density |   .0023043   .0004127     5.58   0.000      .001495    .0031136
+ln_medi~2020 |  -.0075872    .002897    -2.62   0.009    -.0132675   -.0019069
+             |
+  state_fips |
+          2  |  -.0124914   .0052366    -2.39   0.017    -.0227591   -.0022238
+          4  |   .1009964   .0063706    15.85   0.000     .0885053    .1134875
+          5  |   .0101972   .0041015     2.49   0.013     .0021551    .0182393
+          6  |   .0382427   .0063824     5.99   0.000     .0257284     .050757
+          8  |   .0502287   .0044638    11.25   0.000     .0414763    .0589812
+         10  |    .017887    .006087     2.94   0.003     .0059518    .0298221
+         11  |  -.0304554    .004044    -7.53   0.000    -.0383848    -.022526
+         12  |   .0589975   .0043021    13.71   0.000     .0505622    .0674328
+         13  |   .0261961   .0038933     6.73   0.000     .0185624    .0338299
+         15  |  -.0162665   .0084568    -1.92   0.055    -.0328483    .0003153
+         16  |   .1403005   .0044552    31.49   0.000      .131565    .1490361
+         17  |  -.0157925   .0036621    -4.31   0.000    -.0229731   -.0086119
+         18  |    .025882   .0035052     7.38   0.000     .0190091    .0327549
+         19  |  -.0100196   .0037103    -2.70   0.007    -.0172946   -.0027445
+         20  |   .0034461    .003786     0.91   0.363    -.0039774    .0108697
+         21  |   .0073973   .0041645     1.78   0.076    -.0007682    .0155629
+         22  |  -.0323981   .0038072    -8.51   0.000    -.0398631   -.0249331
+         23  |   .0516717   .0049635    10.41   0.000     .0419396    .0614039
+         24  |   .0107461   .0043642     2.46   0.014     .0021889    .0193033
+         25  |   .0284637   .0070793     4.02   0.000     .0145829    .0423446
+         26  |   .0334325   .0036213     9.23   0.000     .0263319    .0405331
+         27  |   .0079797   .0038511     2.07   0.038     .0004285    .0155309
+         28  |  -.0154306   .0039483    -3.91   0.000    -.0231722    -.007689
+         29  |   .0235855   .0038092     6.19   0.000     .0161166    .0310543
+         30  |    .047164   .0076641     6.15   0.000     .0321365    .0621914
+         31  |   .0062953   .0036539     1.72   0.085    -.0008692    .0134597
+         32  |    .071743   .0054207    13.24   0.000     .0611143    .0823717
+         33  |   .0568509   .0075343     7.55   0.000     .0420779    .0716239
+         34  |   .0242326    .006768     3.58   0.000     .0109623     .037503
+         35  |   .0138437   .0065415     2.12   0.034     .0010174      .02667
+         36  |   .0146194   .0045345     3.22   0.001     .0057283    .0235104
+         37  |   .0380463   .0035276    10.79   0.000     .0311295    .0449631
+         38  |  -.0369838   .0041704    -8.87   0.000     -.045161   -.0288067
+         39  |   .0155395   .0036621     4.24   0.000      .008359      .02272
+         40  |   .0032062   .0043046     0.74   0.456    -.0052341    .0116466
+         41  |   .0646126   .0055568    11.63   0.000      .053717    .0755081
+         42  |   .0004458   .0040651     0.11   0.913    -.0075249    .0084165
+         44  |   .0384156   .0039845     9.64   0.000     .0306029    .0462282
+         45  |   .0261904   .0038576     6.79   0.000     .0186266    .0337543
+         46  |   .0126692   .0046465     2.73   0.006     .0035586    .0217799
+         47  |   .0579563   .0036775    15.76   0.000     .0507456    .0651669
+         48  |   .0241537   .0039891     6.05   0.000     .0163319    .0319754
+         49  |   .1056196   .0049298    21.42   0.000     .0959534    .1152857
+         50  |    .033705   .0049371     6.83   0.000     .0240244    .0433855
+         51  |   .0066123   .0038404     1.72   0.085    -.0009178    .0141424
+         53  |   .0648725   .0041312    15.70   0.000     .0567722    .0729728
+         54  |  -.0155165   .0045018    -3.45   0.001    -.0243434   -.0066896
+         55  |   .0130983   .0036977     3.54   0.000     .0058479    .0203486
+         56  |   .0105188   .0080351     1.31   0.191    -.0052361    .0262738
+             |
+       _cons |   .1689931   .0309042     5.47   0.000     .1083975    .2295888
+------------------------------------------------------------------------------
+
+. 
+. 
+. // scatter
+. twoway (scatter hpi_growth cov_mort_rate, msize(tiny) mcolor(gs10%30)) ///
+>        (lfit hpi_growth cov_mort_rate, lcolor(red)), ///
+>        title("Housing Price Growth vs. COVID-19 Mortality") ///
+>        xtitle("COVID-19 Deaths per 1,000 Residents (2020)") ///
+>        ytitle("HPI Growth Rate (2021)") ///
+>        legend(order(1 "Counties" 2 "Linear Fit")) ///
+>        graphregion(color(white))
+
+. graph export "coveffect_scatter.png", replace as(png) width(2000)
+file coveffect_scatter.png saved as PNG format
+
+. 
+. binscatter hpi_growth cov_mort_rate, ///
+>            line(lfit) ///
+>            title("Binned Scatter: HPI Growth vs. COVID-19 Mortality") ///
+>            xtitle("COVID-19 Deaths per 1,000 Residents") ///
+>            ytitle("HPI Growth Rate") ///
+>            legend(order(1 "Counties" 2 "Linear Fit")) ///
+>            graphregion(color(white))
+
+. graph export "coveffect_binnedscatter.png", replace as(png) width(2000)
+file coveffect_binnedscatter.png saved as PNG format
+
+.           
+. binscatter hpi_growth cov_mort_rate, ///
+>            controls(ln_density ln_medinc2020 i.state_fips) ///
+>            title("Partial Relationship: Covid Mortality & HPI Growth") ///
+>            xtitle("COVID-19 Deaths per 1,000 Residents") ///
+>            ytitle("HPI Growth Rate") ///
+>            legend(order(1 "Counties" 2 "Linear Fit")) ///
+>            graphregion(color(white)) ///
+>            note("Controls included for ln(popdens), ln(medinc), and State Fi
+> xed Effects")
+
+. graph export "partial_coveffect_scatter.png", replace as(png) width(2000)
+file partial_coveffect_scatter.png saved as PNG format
+
+. 
+. // check if case effect is diff than deaths
+. reg hpi_growth cov_case_rate ln_density ln_medinc2020 i.state_fips, vce(robu
+> st)
+
+Linear regression                               Number of obs     =      3,039
+                                                F(52, 2986)       =     651.86
+                                                Prob > F          =     0.0000
+                                                R-squared         =     0.6582
+                                                Root MSE          =     .02159
+
+------------------------------------------------------------------------------
+             |               Robust
+  hpi_growth | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+-------------+----------------------------------------------------------------
+cov_case_r~e |  -.0001385   .0000233    -5.93   0.000    -.0001842   -.0000927
+  ln_density |   .0025662   .0004165     6.16   0.000     .0017495    .0033828
+ln_medi~2020 |  -.0066999   .0028517    -2.35   0.019    -.0122913   -.0011084
+             |
+  state_fips |
+          2  |  -.0116258   .0054385    -2.14   0.033    -.0222893   -.0009622
+          4  |   .1003325   .0062708    16.00   0.000      .088037     .112628
+          5  |   .0100027   .0041493     2.41   0.016      .001867    .0181383
+          6  |   .0370544    .006585     5.63   0.000     .0241427     .049966
+          8  |   .0495767   .0046978    10.55   0.000     .0403654     .058788
+         10  |   .0155566   .0060133     2.59   0.010      .003766    .0273472
+         11  |  -.0365327   .0042042    -8.69   0.000     -.044776   -.0282894
+         12  |   .0576659   .0043098    13.38   0.000     .0492154    .0661164
+         13  |   .0237459   .0040176     5.91   0.000     .0158683    .0316234
+         15  |  -.0218776   .0085889    -2.55   0.011    -.0387183    -.005037
+         16  |   .1416973   .0044844    31.60   0.000     .1329044    .1504902
+         17  |  -.0164534   .0037512    -4.39   0.000    -.0238086   -.0090981
+         18  |    .025415   .0035905     7.08   0.000     .0183749    .0324551
+         19  |  -.0092515   .0037733    -2.45   0.014    -.0166501   -.0018528
+         20  |    .005858   .0038758     1.51   0.131    -.0017416    .0134575
+         21  |   .0069322   .0042812     1.62   0.106    -.0014622    .0153267
+         22  |  -.0346837   .0038923    -8.91   0.000    -.0423155   -.0270519
+         23  |   .0471159    .005211     9.04   0.000     .0368985    .0573334
+         24  |     .00684    .004612     1.48   0.138     -.002203     .015883
+         25  |    .022304   .0072596     3.07   0.002     .0080698    .0365383
+         26  |   .0303673   .0037502     8.10   0.000      .023014    .0377206
+         27  |   .0089736   .0039344     2.28   0.023     .0012592    .0166879
+         28  |  -.0174993   .0040473    -4.32   0.000    -.0254351   -.0095636
+         29  |   .0234422   .0038727     6.05   0.000     .0158488    .0310357
+         30  |   .0475351   .0077342     6.15   0.000     .0323703       .0627
+         31  |   .0077495   .0037482     2.07   0.039     .0004002    .0150989
+         32  |   .0714306   .0054335    13.15   0.000     .0607769    .0820843
+         33  |   .0526049   .0076259     6.90   0.000     .0376523    .0675574
+         34  |   .0168665    .006967     2.42   0.016      .003206    .0305271
+         35  |   .0126492   .0063322     2.00   0.046     .0002334    .0250651
+         36  |   .0105848   .0047378     2.23   0.026      .001295    .0198746
+         37  |   .0365045   .0036627     9.97   0.000     .0293229    .0436861
+         38  |  -.0348303   .0042532    -8.19   0.000    -.0431697   -.0264908
+         39  |     .01439    .003794     3.79   0.000     .0069508    .0218292
+         40  |   .0060938   .0043152     1.41   0.158    -.0023673    .0145549
+         41  |   .0613256    .005847    10.49   0.000      .049861    .0727902
+         42  |  -.0031832   .0041681    -0.76   0.445    -.0113559    .0049894
+         44  |   .0348058   .0041885     8.31   0.000     .0265932    .0430184
+         45  |   .0237327   .0039519     6.01   0.000      .015984    .0314815
+         46  |    .014096   .0047355     2.98   0.003     .0048107    .0233812
+         47  |   .0597095   .0037689    15.84   0.000     .0523197    .0670993
+         48  |   .0221666   .0040391     5.49   0.000     .0142469    .0300863
+         49  |   .1071857    .004941    21.69   0.000     .0974977    .1168737
+         50  |   .0287923   .0052223     5.51   0.000     .0185527     .039032
+         51  |   .0035882   .0040116     0.89   0.371    -.0042775    .0114539
+         53  |   .0622072   .0043415    14.33   0.000     .0536946    .0707197
+         54  |  -.0174722   .0046315    -3.77   0.000    -.0265534   -.0083909
+         55  |   .0153372   .0037787     4.06   0.000      .007928    .0227463
+         56  |    .012184   .0080185     1.52   0.129    -.0035383    .0279063
+             |
+       _cons |   .1639747   .0304865     5.38   0.000     .1041981    .2237513
+------------------------------------------------------------------------------
+
+. corr cov_mort_rate cov_case_rate
+(obs=3,044)
+
+             | cov_mo~e cov_ca~e
+-------------+------------------
+cov_mort_r~e |   1.0000
+cov_case_r~e |   0.5109   1.0000
+
+
+. 
+. // check joint significance of controls
+. test ln_density ln_medinc2020
+
+ ( 1)  ln_density = 0
+ ( 2)  ln_medinc2020 = 0
+
+       F(  2,  2986) =   19.03
+            Prob > F =    0.0000
+
+. 
+. // summary table
+. summarize hpi_growth cov_mort_rate cov_case_rate medinc2020 density ctypop20
+> 20
+
+    Variable |        Obs        Mean    Std. dev.       Min        Max
+-------------+---------------------------------------------------------
+  hpi_growth |      3,039    .1101312    .0366174  -.0151019   .2570358
+cov_mort_r~e |      3,044    1.178641    .8909555          0   9.036144
+cov_case_r~e |      3,044    67.38032    27.85526    1.99195   277.8809
+  medinc2020 |      3,043    57260.27     14317.9      22901     155362
+     density |      3,044    189.0749    742.1705   .0927009   18726.82
+-------------+---------------------------------------------------------
+  ctypop2020 |      3,044    102531.2    331768.4         62   1.00e+07
+
+. 
+. 
+. *This line should always be at the end
+. log close
+      name:  <unnamed>
+       log:  /home/henhilt/ECON388/DataProject3/logDP3.txt
+  log type:  text
+ closed on:  14 Apr 2026, 20:02:56
+------------------------------------------------------------------------------

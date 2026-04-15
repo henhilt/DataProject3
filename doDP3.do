@@ -1,0 +1,269 @@
+// nav to directory
+cd "/home/henhilt/ECON388/DataProject3"
+
+capture log close
+log using logDP3.txt, replace text
+clear
+
+/*
+
+ECON 388 STATA EXERCISE TEMPLATE
+
+  Use this template DO file as the
+  basis for all Stata exercises.
+
+  For each assignment, make sure to
+  enter your name and the problem 
+  set number in the appropriate
+  spaces below.
+
+NAME: Henry Hilton
+
+DATA PROJECT 3
+
+
+  Begin your do file in the space 
+  below the stars, adding additional
+  lines as needed */
+
+************************************
+
+// import and save hpi dataset
+import excel "hpi_at_zip3.xlsx", firstrow clear
+
+// remove obs not in 2020 and 2021
+keep if inlist(year, 2020, 2021)
+
+
+// make each row a unique zip
+reshape wide hpi annualdelta hpi1990base hpi2000base, i(zip) j(year)
+
+save hpi.dta, replace
+
+// import and save the zip dataset
+import excel "ZIP_COUNTY_122020.xlsx", firstrow clear
+// convert zip to int from string to match hpi file
+destring zip, replace
+destring fips, replace
+sort zip fips
+
+// get residential ratio for zip
+collapse (sum) RES_RATIO, by(zip fips)
+bysort zip: egen total_res = total(RES_RATIO)
+// get weights per zip
+gen resweight = RES_RATIO / total_res
+replace resweight = 0 if resweight == .
+drop RES_RATIO
+drop total_res
+save zip.dta, replace
+
+
+// import and save the covid deaths dataset
+import delimited "us-counties-2020.csv", clear
+// convert date strings to date type
+gen date_new = date(date, "MDY")
+format date_new %td
+
+// get final death values per county
+sort fips date_new
+// keep last entry for each county
+bysort fips (date_new): keep if _n == _N
+// 3219 count of fips after matches count of before=success
+save covdeaths.dta, replace
+
+
+// import and save the county population dataset
+import excel "co-est2025-pop.xlsx", firstrow clear
+compress
+// rename columns
+rename GeographicArea ctystate
+rename April12020EstimatesBase ctypop2020
+keep ctystate ctypop2020
+// split county and state column
+split ctystate, p(",") limit(2)
+drop ctystate
+rename ctystate1 county_raw
+rename ctystate2 state
+// clean county names to remove endings
+gen county = strtrim(county_raw)
+replace county = subinstr(county, " County", "", .)
+replace county = subinstr(county, " City and Borough", "", .)
+replace county = subinstr(county, " Census Area", "", .)
+replace county = subinstr(county, " Municipality", "", .)
+replace county = subinstr(county, " Planning Region", "", .)
+replace county = subinstr(county, " Parish", "", .)
+replace county = subinstr(county, " city", "", .)
+// remove period or spaces
+replace county = substr(county, 2, .) if substr(county, 1, 1) == "."
+replace county = strtrim(county)
+// combine city/county of same name to avoid merge issues
+collapse (sum) ctypop2020, by(county state)
+// drop disclaimer/US rows and unneeded columns
+drop if missing(ctypop2020,state)
+// finalize check cleaning
+replace county = strtrim(lower(county))
+replace state = strtrim(lower(state))
+replace county = subinstr(county, ".", "", .)
+replace county = strtrim(county)
+save ctypop.dta, replace
+
+
+// merge hpi and zip
+use hpi.dta, clear
+
+merge 1:m zip using "zip.dta"
+
+
+// get weighted hpi per zip
+gen weighted_hpi2020 = hpi2020 * resweight
+gen weighted_hpi2021 = hpi2021 * resweight
+
+
+// aggregate to the county (fips) level
+collapse (sum) weighted_hpi2020 weighted_hpi2021, by(fips)
+
+rename weighted_hpi2020 ctyhpi2020
+rename weighted_hpi2021 ctyhpi2021
+
+save ctyhpi.dta, replace
+
+// merge with covdeaths
+merge 1:1 fips using "covdeaths.dta"
+//clean up unmatched, only a handful (18) lost, keep matches only
+keep if _merge == 3
+drop _merge
+// finalize cleaning check
+replace county = strtrim(lower(county))
+replace state = strtrim(lower(state))
+replace county = subinstr(county, " county", "", .)
+replace county = strtrim(county)
+save "hpi_covid.dta", replace
+
+// merge with ctypop
+merge 1:1 county state using "ctypop.dta"
+// keep successful, lost 268
+keep if _merg == 3
+drop _merge
+
+// create mortality rate of covid per 1000 people
+gen cov_mort_rate = (deaths / ctypop2020) * 1000
+// create change of hpi
+gen hpi_growth = (ctyhpi2021 / ctyhpi2020) - 1
+compress
+// save base dataset
+save "base.dta", replace
+
+// add in controls
+// want population density, so add in area of each county to calc
+// from https://www.census.gov/geographies/reference-files/time-series/geo/gazetteer-files.2020.html#form-dropdown-264479560
+import delimited "2020_Gaz_counties_national.txt", clear 
+rename geoid fips
+rename aland_sqmi land_sqmi
+keep fips land_sqmi
+save "land_area.dta", replace
+// want income per county to control for poverty differences
+// https://www.census.gov/data/datasets/2020/demo/saipe/2020-state-and-county.html
+import excel "est20all.xls", sheet("est20ALL") cellrange(A4) firstrow clear
+// combine state and county fips
+destring StateFIPSCode CountyFIPSCode, replace
+gen fips = (StateFIPSCode * 1000) + CountyFIPSCode
+// rename and drop unneeded
+rename MedianHouseholdIncome medinc2020
+keep fips medinc2020
+destring medinc2020, replace
+gen ln_medinc2020 = ln(medinc2020)
+save "ctyinc.dta", replace
+
+// merge cty area with base
+use "base.dta", clear
+merge 1:1 fips using "land_area.dta"
+// only keep matches, 177 lost
+keep if _merge == 3
+drop _merge
+
+// calc pop density
+gen density = ctypop2020 / land_sqmi
+// log of density to normalize/account for really different size counties
+gen ln_density = ln(density)
+
+// merge in ctyinc
+merge 1:1 fips using "ctyinc.dta"
+// only keep matches, 151 lost
+keep if _merge == 3
+drop _merge
+
+// make case rate var
+gen cov_case_rate = (cases / ctypop2020) * 1000
+
+// make state_fips numerical
+gen state_fips = int(fips / 1000)
+
+// finalize master dataset
+keep fips county state state_fips hpi_growth cov_mort_rate cov_case_rate density ln_density medinc2020 ln_medinc2020 ctypop2020 deaths cases
+compress
+// shrink col width
+format county state %8s
+save "master.dta", replace
+
+// naive regression hpi growth on mort rate
+reg hpi_growth cov_mort_rate
+
+// add in controls and fixed state effects
+reg hpi_growth cov_mort_rate ln_density ln_medinc2020 i.state_fips 
+hettest
+/*
+Breusch–Pagan/Cook–Weisberg test for heteroskedasticity 
+Assumption: Normal error terms
+Variable: Fitted values of hpi_growth
+
+H0: Constant variance
+
+    chi2(1) =  26.52
+Prob > chi2 = 0.0000
+suggests I don't have constant variance, so i should use vce(robust)
+*/
+reg hpi_growth cov_mort_rate ln_density ln_medinc2020 i.state_fips, vce(robust)
+
+
+// scatter
+twoway (scatter hpi_growth cov_mort_rate, msize(tiny) mcolor(gs10%30)) ///
+       (lfit hpi_growth cov_mort_rate, lcolor(red)), ///
+       title("Housing Price Growth vs. COVID-19 Mortality") ///
+       xtitle("COVID-19 Deaths per 1,000 Residents (2020)") ///
+       ytitle("HPI Growth Rate (2021)") ///
+       legend(off) ///
+       graphregion(color(white))
+graph export "coveffect_scatter.png", replace as(png) width(2000)
+
+binscatter hpi_growth cov_mort_rate, ///
+           line(lfit) ///
+           title("Binned Scatter: HPI Growth vs. COVID-19 Mortality") ///
+           xtitle("COVID-19 Deaths per 1,000 Residents") ///
+           ytitle("HPI Growth Rate") ///
+	   legend(order(1 "Counties" 2 "Linear Fit")) ///
+	   graphregion(color(white))
+graph export "coveffect_binnedscatter.png", replace as(png) width(2000)
+	  
+binscatter hpi_growth cov_mort_rate, ///
+           controls(ln_density ln_medinc2020 i.state_fips) ///
+           title("Partial Relationship: Covid Mortality & HPI Growth") ///
+	   xtitle("COVID-19 Deaths per 1,000 Residents") ///
+           ytitle("HPI Growth Rate") ///
+	   legend(order(1 "Counties" 2 "Linear Fit")) ///
+	   graphregion(color(white)) ///
+           note("Controls included for ln(popdens), ln(medinc), and State Fixed Effects")
+graph export "partial_coveffect_scatter.png", replace as(png) width(2000)
+
+// check if case effect is diff than deaths
+reg hpi_growth cov_case_rate ln_density ln_medinc2020 i.state_fips, vce(robust)
+corr cov_mort_rate cov_case_rate
+
+// check joint significance of controls
+test ln_density ln_medinc2020
+
+// summary table
+summarize hpi_growth cov_mort_rate cov_case_rate medinc2020 density ctypop2020
+
+
+*This line should always be at the end
+log close
